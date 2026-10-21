@@ -49,19 +49,36 @@ try {
 }
 
 // --- 1. MySQL Database Connection ---
-const db = mysql.createConnection({
-    host: 'localhost',
-    user: 'root',
-    password: '',
-    database: 'gold_db' // Fresh, dedicated database for this app
-});
+// const db = mysql.createConnection({
+//     host: 'localhost',
+//     user: 'root',
+//     password: '',
+//     database: 'gold_db' // Fresh, dedicated database for this app
+// });
 
-db.connect(err => {
+//here i use Railway database credentials
+// ✅ Support Railway MySQL Environment Variables + Local fallback:
+const db = mysql.createPool(
+    process.env.MYSQL_URL || process.env.DATABASE_URL || {
+        host: process.env.MYSQLHOST || process.env.DB_HOST || 'localhost',
+        user: process.env.MYSQLUSER || process.env.DB_USER || 'root',
+        password: process.env.MYSQLPASSWORD || process.env.DB_PASSWORD || '',
+        database: process.env.MYSQLDATABASE || process.env.DB_NAME || 'gold_db',
+        port: Number(process.env.MYSQLPORT || process.env.DB_PORT || 3306),
+        waitForConnections: true,
+        connectionLimit: 10,
+        queueLimit: 0
+    }
+);
+
+
+db.getConnection((err, connection) => {
     if (err) {
         console.error('Database connection failed: ' + err.stack);
         return;
     }
-    console.log('Connected to MySQL database: gold_db');
+    console.log('Connected to MySQL database via Pool');
+    connection.release();
 
     // Auto-migrations: Ensure 'status' column in 'users'
     const addStatusCol = "ALTER TABLE users ADD COLUMN status VARCHAR(20) DEFAULT 'PENDING'";
@@ -2269,7 +2286,14 @@ app.delete('/api/jewellery/:id', (req, res) => {
 });
 
 // --- 4. Start Server ---
-const PORT = 8080;
+// const PORT = 8080;
+// app.listen(PORT, '0.0.0.0', () => {
+//     console.log(`Backend Server running on port ${PORT}`);
+// });
+
+//here i use dynamic port that allocate to my backend in railway
+// ✅ Allow Railway's dynamic PORT:
+const PORT = process.env.PORT || 8080;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`Backend Server running on port ${PORT}`);
 });
