@@ -237,9 +237,38 @@ const JWT_SECRET = "YOUR_SUPER_SECRET_KEY_12345";
 
 // --- 3. API ROUTES ---
 
-// Health check
-app.get('/', (req, res) => {
-    res.send("Welcome! The Node.js GoldApp Backend is running successfully.");
+// Health check & Database Diagnostics
+app.get(['/', '/api/health'], (req, res) => {
+    db.query('SELECT 1 + 1 AS solution', (err, results) => {
+        if (err) {
+            return res.status(500).json({
+                status: 'error',
+                message: 'Database connection failed',
+                error: {
+                    code: err.code,
+                    errno: err.errno,
+                    sqlMessage: err.sqlMessage || err.message,
+                },
+                config: {
+                    usingUrl: !!(process.env.MYSQL_URL || process.env.DATABASE_URL),
+                    host: process.env.MYSQLHOST || process.env.DB_HOST || 'localhost (fallback)',
+                    port: Number(process.env.MYSQLPORT || process.env.DB_PORT || 3306),
+                    database: process.env.MYSQLDATABASE || process.env.DB_NAME || 'gold_db (fallback)',
+                    user: process.env.MYSQLUSER || process.env.DB_USER || 'root (fallback)'
+                }
+            });
+        }
+        res.json({
+            status: 'ok',
+            message: 'Backend & Database are connected and running successfully!',
+            database: 'Connected',
+            config: {
+                usingUrl: !!(process.env.MYSQL_URL || process.env.DATABASE_URL),
+                host: process.env.MYSQLHOST || process.env.DB_HOST || 'localhost',
+                database: process.env.MYSQLDATABASE || process.env.DB_NAME || 'gold_db'
+            }
+        });
+    });
 });
 
 // A. Signup (User starts with PENDING status)
