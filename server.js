@@ -57,19 +57,35 @@ try {
 // });
 
 //here i use Railway database credentials
-// ✅ Support Railway MySQL Environment Variables + Local fallback:
-const db = mysql.createPool(
-    process.env.MYSQL_URL || process.env.DATABASE_URL || {
+// ✅ Support Aiven / Railway / Render MySQL Environment Variables + SSL + Local fallback:
+const isRemoteDb = !!(
+    process.env.MYSQL_URL ||
+    process.env.DATABASE_URL ||
+    (process.env.MYSQLHOST && process.env.MYSQLHOST !== 'localhost' && process.env.MYSQLHOST !== '127.0.0.1') ||
+    (process.env.DB_HOST && process.env.DB_HOST !== 'localhost' && process.env.DB_HOST !== '127.0.0.1')
+);
+
+const poolConfig = (process.env.MYSQL_URL || process.env.DATABASE_URL)
+    ? {
+        uri: process.env.MYSQL_URL || process.env.DATABASE_URL,
+        ssl: isRemoteDb ? { rejectUnauthorized: false } : undefined,
+        waitForConnections: true,
+        connectionLimit: 10,
+        queueLimit: 0
+    }
+    : {
         host: process.env.MYSQLHOST || process.env.DB_HOST || 'localhost',
         user: process.env.MYSQLUSER || process.env.DB_USER || 'root',
         password: process.env.MYSQLPASSWORD || process.env.DB_PASSWORD || '',
         database: process.env.MYSQLDATABASE || process.env.DB_NAME || 'gold_db',
         port: Number(process.env.MYSQLPORT || process.env.DB_PORT || 3306),
+        ssl: isRemoteDb ? { rejectUnauthorized: false } : undefined,
         waitForConnections: true,
         connectionLimit: 10,
         queueLimit: 0
-    }
-);
+    };
+
+const db = mysql.createPool(poolConfig);
 
 
 db.getConnection((err, connection) => {
@@ -85,6 +101,10 @@ db.getConnection((err, connection) => {
     db.query(addStatusCol, () => {
         db.query("UPDATE users SET status = 'PENDING' WHERE status IS NULL OR status = ''", () => {});
     });
+
+    // Auto-migrations: Ensure 'aadhar_number' column in 'users'
+    const addAadharCol = "ALTER TABLE users ADD COLUMN aadhar_number VARCHAR(20) DEFAULT NULL";
+    db.query(addAadharCol, () => {});
 
     // Ensure demo user exists in users table with APPROVED status
     const seedDemoUser = `
@@ -271,43 +291,70 @@ app.get(['/', '/api/health'], (req, res) => {
     });
 });
 
-// A. Signup (User starts with PENDING status)
-app.post('/api/auth/signup', upload.single('legalDocument'), (req, res) => {
-    const { name, email, mobile, address, password } = req.body;
-    const documentUrl = req.file ? `/uploads/${req.file.filename}` : '';
+// A. Signup / Registration (User starts with PENDING status awaiting Admin Approval)
+const handleSignupRequest = (req, res) => {
+    const name = (req.body.name || '').trim();
+    const email = (req.body.email || '').trim().toLowerCase();
+    const mobile = (req.body.mobile || req.body.phoneNumber || req.body.phone_number || '').trim();
+    const aadharNumber = (req.body.aadharNumber || req.body.aadhar_number || '').trim();
+    const address = (req.body.address || (aadharNumber ? `Aadhar: ${aadharNumber}` : 'Online Customer')).trim();
+    const password = req.body.password ? req.body.password.toString() : '';
+    const documentUrl = req.file ? `/uploads/${req.file.filename}` : (req.body.documentUrl || req.body.document_url || '');
 
     if (!name || !email || !password || !mobile) {
-        return res.status(400).json({ message: "Name, email, mobile, and password are required." });
+        return res.status(400).json({
+            success: false,
+            message: "Name, email, mobile number, and password are required."
+        });
     }
 
     const query = 'INSERT INTO users (name, email, mobile, address, password, document_url, status) VALUES (?, ?, ?, ?, ?, ?, ?)';
 
     db.query(query, [name, email, mobile, address, password, documentUrl, 'PENDING'], (err, result) => {
         if (err) {
-            console.error(err);
+            console.error('[Registration DB Error]:', err);
             if (err.code === 'ER_DUP_ENTRY') {
-                return res.status(409).json({ message: "Email or mobile number already exists." });
+                return res.status(409).json({
+                    success: false,
+                    message: "An account with this email or mobile number already exists."
+                });
             }
-            return res.status(500).json({ message: "Database error." });
+            return res.status(500).json({
+                success: false,
+                message: "Database error during registration. Please verify database connection."
+            });
         }
 
         const userId = result.insertId;
+
+        // Try updating aadhar_number if column exists
+        if (aadharNumber) {
+            db.query('UPDATE users SET aadhar_number = ? WHERE id = ?', [aadharNumber, userId], () => {});
+        }
+
         const userPayload = {
             id: userId,
             name: name,
             email: email,
             mobile: mobile,
+            phoneNumber: mobile,
+            aadharNumber: aadharNumber,
             address: address,
             documentUrl: documentUrl,
             status: 'PENDING'
         };
 
-        res.status(200).json({
-            message: "Registration submitted successfully! Please wait for admin approval before logging in.",
+        res.status(201).json({
+            success: true,
+            status: 'PENDING',
+            message: "Registration submitted successfully! Your account is pending administrator approval. Please wait for an administrator to review and approve your account.",
             user: userPayload
         });
     });
-});
+};
+
+app.post('/api/auth/signup', upload.single('legalDocument'), handleSignupRequest);
+app.post('/api/auth/register', upload.single('legalDocument'), handleSignupRequest);
 
 // B. Login Endpoint with JWT Authentication & Database Verification
 const handleLoginRequest = (req, res) => {
@@ -359,6 +406,7 @@ const handleLoginRequest = (req, res) => {
             if (userStatus === 'PENDING') {
                 return res.status(403).json({
                     success: false,
+                    status: 'PENDING',
                     message: "Access Denied: Your account is pending admin approval. Please wait for an administrator to approve your account before logging in."
                 });
             }
@@ -535,11 +583,18 @@ app.post('/api/logout', (req, res) => {
 
 // C. Fetch All Users (for Admin Dashboard)
 app.get('/api/users', (req, res) => {
-    const query = 'SELECT id, name, email, mobile, address, document_url AS documentUrl, status, created_at FROM users';
+    const query = 'SELECT id, name, email, mobile, COALESCE(aadhar_number, "") AS aadharNumber, address, document_url AS documentUrl, status, created_at FROM users';
     db.query(query, (err, results) => {
         if (err) {
-            console.error(err);
-            return res.status(500).json({ message: "Database error." });
+            const fallbackQuery = 'SELECT id, name, email, mobile, address, document_url AS documentUrl, status, created_at FROM users';
+            db.query(fallbackQuery, (fbErr, fbResults) => {
+                if (fbErr) {
+                    console.error(fbErr);
+                    return res.status(500).json({ message: "Database error." });
+                }
+                return res.status(200).json(fbResults);
+            });
+            return;
         }
         res.status(200).json(results);
     });

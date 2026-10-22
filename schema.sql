@@ -8,9 +8,10 @@ CREATE TABLE IF NOT EXISTS users (
     name VARCHAR(255) NOT NULL,
     email VARCHAR(255) UNIQUE NOT NULL,
     mobile VARCHAR(15) UNIQUE NOT NULL,
-    address TEXT NOT NULL,
+    aadhar_number VARCHAR(20) DEFAULT NULL,
+    address TEXT,
     password VARCHAR(255) NOT NULL,
-    document_url VARCHAR(500) NOT NULL,
+    document_url VARCHAR(500) DEFAULT '',
     status VARCHAR(20) DEFAULT 'PENDING',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
