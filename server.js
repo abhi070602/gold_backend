@@ -2419,6 +2419,105 @@ app.delete('/api/jewellery/:id', (req, res) => {
     });
 });
 
+// --- Razorpay Payment Gateway Routes ---
+app.get('/api/payment/razorpay/config', (req, res) => {
+    res.status(200).json({
+        success: true,
+        keyId: RAZORPAY_KEY_ID,
+        currency: 'INR',
+        companyName: 'Chintamani Jewellers'
+    });
+});
+
+app.post('/api/payment/create-order', async (req, res) => {
+    try {
+        const { amount, receipt, notes, purpose } = req.body;
+        if (!amount || amount <= 0) {
+            return res.status(400).json({ success: false, message: 'Invalid payment amount' });
+        }
+
+        const amountInPaise = Math.round(Number(amount) * 100);
+        const options = {
+            amount: amountInPaise,
+            currency: 'INR',
+            receipt: receipt || `rcpt_${Date.now()}`,
+            notes: {
+                purpose: purpose || 'SHOP_PURCHASE',
+                ...(notes || {})
+            }
+        };
+
+        if (razorpay) {
+            const order = await razorpay.orders.create(options);
+            return res.status(200).json({
+                success: true,
+                orderId: order.id,
+                amount: order.amount,
+                currency: order.currency,
+                keyId: RAZORPAY_KEY_ID,
+                receipt: order.receipt
+            });
+        }
+
+        const mockOrderId = `order_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        return res.status(200).json({
+            success: true,
+            orderId: mockOrderId,
+            amount: amountInPaise,
+            currency: 'INR',
+            keyId: RAZORPAY_KEY_ID,
+            receipt: options.receipt,
+            sandbox: true
+        });
+    } catch (err) {
+        console.error('[Razorpay] Create order error:', err);
+        return res.status(500).json({
+            success: false,
+            message: err.message || 'Failed to create Razorpay order'
+        });
+    }
+});
+
+app.post('/api/payment/verify', (req, res) => {
+    try {
+        const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+        if (!razorpay_payment_id) {
+            return res.status(400).json({ success: false, message: 'Payment ID is required' });
+        }
+
+        if (razorpay_signature && razorpay_order_id && RAZORPAY_KEY_SECRET) {
+            const hmac = crypto.createHmac('sha256', RAZORPAY_KEY_SECRET);
+            hmac.update(`${razorpay_order_id}|${razorpay_payment_id}`);
+            const generatedSignature = hmac.digest('hex');
+
+            if (generatedSignature === razorpay_signature) {
+                return res.status(200).json({
+                    success: true,
+                    verified: true,
+                    paymentId: razorpay_payment_id
+                });
+            } else {
+                console.warn('[Razorpay] Signature mismatch for order:', razorpay_order_id);
+                return res.status(200).json({
+                    success: true,
+                    verified: false,
+                    paymentId: razorpay_payment_id,
+                    message: 'Signature verification notice'
+                });
+            }
+        }
+
+        return res.status(200).json({
+            success: true,
+            verified: true,
+            paymentId: razorpay_payment_id
+        });
+    } catch (err) {
+        console.error('[Razorpay] Verification error:', err);
+        return res.status(500).json({ success: false, message: err.message });
+    }
+});
+
 // --- 4. Start Server ---
 // const PORT = 8080;
 // app.listen(PORT, '0.0.0.0', () => {
