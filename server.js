@@ -129,6 +129,18 @@ db.getConnection((err, connection) => {
         db.query(q, () => {});
     });
 
+    // Auto-fix table AUTO_INCREMENT on remote MySQL (prevents ER_NO_DEFAULT_FOR_FIELD on id)
+    const tableFixes = [
+        "ALTER TABLE categories MODIFY id INT AUTO_INCREMENT",
+        "ALTER TABLE products MODIFY id INT AUTO_INCREMENT",
+        "ALTER TABLE metal_rates MODIFY id INT AUTO_INCREMENT",
+        "ALTER TABLE schemes MODIFY id INT AUTO_INCREMENT",
+        "ALTER TABLE transactions MODIFY id INT AUTO_INCREMENT"
+    ];
+    tableFixes.forEach(q => {
+        db.query(q, () => {});
+    });
+
     // Auto-create 'categories' table
     const createCategoriesTable = `
         CREATE TABLE IF NOT EXISTS categories (
@@ -1767,22 +1779,41 @@ app.post('/api/rates', (req, res) => {
         const finalMarkup = (markup !== undefined && markup !== '') ? parseFloat(markup) : (adminMarkup !== undefined ? parseFloat(adminMarkup) : (admin_markup !== undefined ? parseFloat(admin_markup) : prevMarkup));
         const finalUpdatedBy = updatedBy || updated_by || 'ADMIN';
 
-        const insertQuery = `
-            INSERT INTO metal_rates (gold_rate, silver_rate, gold_change, silver_change, admin_markup, updated_by)
-            VALUES (?, ?, ?, ?, ?, ?)
-        `;
+        db.query('SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM metal_rates', (idErr, idRows) => {
+            const nextId = (idRows && idRows[0] && idRows[0].nextId) ? idRows[0].nextId : null;
+            const insertQuery = nextId
+                ? 'INSERT INTO metal_rates (id, gold_rate, silver_rate, gold_change, silver_change, admin_markup, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?)'
+                : 'INSERT INTO metal_rates (gold_rate, silver_rate, gold_change, silver_change, admin_markup, updated_by) VALUES (?, ?, ?, ?, ?, ?)';
+            const insertParams = nextId
+                ? [nextId, finalGold, finalSilver, finalGoldChange, finalSilverChange, finalMarkup, finalUpdatedBy]
+                : [finalGold, finalSilver, finalGoldChange, finalSilverChange, finalMarkup, finalUpdatedBy];
 
-        db.query(insertQuery, [finalGold, finalSilver, finalGoldChange, finalSilverChange, finalMarkup, finalUpdatedBy], (insertErr, insertResult) => {
-            if (insertErr) {
-                console.error("Database error saving metal rate:", insertErr);
-                return res.status(500).json({ message: "Database error.", error: insertErr });
-            }
+            db.query(insertQuery, insertParams, (insertErr, insertResult) => {
+                if (insertErr) {
+                    console.error("Database error saving metal rate:", insertErr);
+                    return res.status(500).json({ message: "Database error.", error: insertErr.sqlMessage || insertErr.message });
+                }
 
-            const timeStr = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) + ' IST';
-            const purities = calculatePurities(finalGold, finalSilver);
+                const timeStr = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) + ' IST';
+                const purities = calculatePurities(finalGold, finalSilver);
 
-            res.status(201).json({
-                message: "Metal rates updated successfully",
+                res.status(201).json({
+                    message: "Metal rates updated successfully",
+                    id: nextId || (insertResult ? insertResult.insertId : 1),
+                    rates: {
+                        gold: finalGold,
+                        silver: finalSilver,
+                        goldChange: finalGoldChange,
+                        silverChange: finalSilverChange,
+                        markup: finalMarkup,
+                        goldPurities: purities.goldPurities,
+                        silverPurities: purities.silverPurities,
+                        updatedBy: finalUpdatedBy,
+                        updatedAt: timeStr,
+                    }
+                });
+            });
+        });
                 id: insertResult.insertId,
                 gold: finalGold,
                 silver: finalSilver,
@@ -1840,13 +1871,20 @@ app.post('/api/categories', (req, res) => {
     if (!name) {
         return res.status(400).json({ message: "Category name is required." });
     }
-    const query = 'INSERT INTO categories (name, description) VALUES (?, ?) ON DUPLICATE KEY UPDATE description = VALUES(description)';
-    db.query(query, [name, description || ''], (err, result) => {
-        if (err) {
-            console.error(err);
-            return res.status(500).json({ message: "Database error." });
-        }
-        res.status(201).json({ id: result.insertId || result.id, name, description });
+    db.query('SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM categories', (idErr, idRows) => {
+        const nextId = (idRows && idRows[0] && idRows[0].nextId) ? idRows[0].nextId : null;
+        const query = nextId
+            ? 'INSERT INTO categories (id, name, description) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE description = VALUES(description)'
+            : 'INSERT INTO categories (name, description) VALUES (?, ?) ON DUPLICATE KEY UPDATE description = VALUES(description)';
+        const params = nextId ? [nextId, name, description || ''] : [name, description || ''];
+
+        db.query(query, params, (err, result) => {
+            if (err) {
+                console.error("Insert category error:", err);
+                return res.status(500).json({ message: "Database error.", error: err.sqlMessage || err.message });
+            }
+            res.status(201).json({ id: nextId || (result ? result.insertId : null), name, description });
+        });
     });
 });
 
@@ -1919,20 +1957,29 @@ app.post('/api/products', upload.single('image'), (req, res) => {
     const finalDesc = description || '';
 
     const insertProduct = (catId) => {
-        const query = 'INSERT INTO products (name, category_id, image_url, price, stock_quantity, description) VALUES (?, ?, ?, ?, ?, ?)';
-        db.query(query, [finalName, catId, finalImageUrl, finalPrice, finalStock, finalDesc], (err, result) => {
-            if (err) {
-                console.error(err);
-                return res.status(500).json({ message: "Database error." });
-            }
-            res.status(201).json({
-                id: result.insertId,
-                name: finalName,
-                categoryId: catId,
-                imageUrl: finalImageUrl,
-                price: finalPrice,
-                stockQuantity: finalStock,
-                description: finalDesc
+        db.query('SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM products', (idErr, idRows) => {
+            const nextId = (idRows && idRows[0] && idRows[0].nextId) ? idRows[0].nextId : null;
+            const query = nextId
+                ? 'INSERT INTO products (id, name, category_id, image_url, price, stock_quantity, description) VALUES (?, ?, ?, ?, ?, ?, ?)'
+                : 'INSERT INTO products (name, category_id, image_url, price, stock_quantity, description) VALUES (?, ?, ?, ?, ?, ?)';
+            const params = nextId
+                ? [nextId, finalName, catId, finalImageUrl, finalPrice, finalStock, finalDesc]
+                : [finalName, catId, finalImageUrl, finalPrice, finalStock, finalDesc];
+
+            db.query(query, params, (err, result) => {
+                if (err) {
+                    console.error("Database insert product error:", err);
+                    return res.status(500).json({ message: "Database error.", error: err.sqlMessage || err.message });
+                }
+                res.status(201).json({
+                    id: nextId || (result ? result.insertId : null),
+                    name: finalName,
+                    categoryId: catId,
+                    imageUrl: finalImageUrl,
+                    price: finalPrice,
+                    stockQuantity: finalStock,
+                    description: finalDesc
+                });
             });
         });
     };
@@ -1941,16 +1988,31 @@ app.post('/api/products', upload.single('image'), (req, res) => {
     if (targetCatId) {
         insertProduct(targetCatId);
     } else if (category && typeof category === 'string') {
-        db.query('SELECT id FROM categories WHERE name = ?', [category], (err, results) => {
-            if (!err && results.length > 0) {
+        db.query('SELECT id FROM categories WHERE LOWER(name) = LOWER(?)', [category], (err, results) => {
+            if (!err && results && results.length > 0) {
                 insertProduct(results[0].id);
             } else {
-                db.query('INSERT INTO categories (name) VALUES (?)', [category], (err, result) => {
-                    if (!err && result.insertId) {
-                        insertProduct(result.insertId);
-                    } else {
-                        insertProduct(null);
-                    }
+                db.query('SELECT COALESCE(MAX(id), 0) + 1 AS nextCatId FROM categories', (catIdErr, catIdRows) => {
+                    const nextCatId = (catIdRows && catIdRows[0] && catIdRows[0].nextCatId) ? catIdRows[0].nextCatId : null;
+                    const catQuery = nextCatId
+                        ? 'INSERT INTO categories (id, name, description) VALUES (?, ?, ?)'
+                        : 'INSERT INTO categories (name, description) VALUES (?, ?)';
+                    const catParams = nextCatId
+                        ? [nextCatId, category, 'Precious Stones and Gemstones']
+                        : [category, 'Precious Stones and Gemstones'];
+
+                    db.query(catQuery, catParams, (catErr, catResult) => {
+                        const createdId = nextCatId || (catResult ? catResult.insertId : null);
+                        if (!catErr && createdId) {
+                            insertProduct(createdId);
+                        } else {
+                            // Fallback to first existing category
+                            db.query('SELECT id FROM categories LIMIT 1', (fbErr, fbRows) => {
+                                const fbId = (fbRows && fbRows.length > 0) ? fbRows[0].id : null;
+                                insertProduct(fbId);
+                            });
+                        }
+                    });
                 });
             }
         });
