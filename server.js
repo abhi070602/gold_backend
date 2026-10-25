@@ -1814,18 +1814,6 @@ app.post('/api/rates', (req, res) => {
                 });
             });
         });
-                id: insertResult.insertId,
-                gold: finalGold,
-                silver: finalSilver,
-                ...purities,
-                goldChange: finalGoldChange,
-                silverChange: finalSilverChange,
-                markup: finalMarkup,
-                updatedBy: finalUpdatedBy,
-                updatedAt: timeStr,
-                createdAt: new Date().toISOString()
-            });
-        });
     });
 });
 
